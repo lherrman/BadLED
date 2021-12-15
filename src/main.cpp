@@ -7,13 +7,18 @@
 
 #define PINLED 13
 #define PINPIR 12
+#define PINPOTI1 2
+#define PINPOTI2 4
 #define NUMPIXELS 51
+
 
 const char* ssid = "MischisIndanetz";
 const char* password = "123456789";
 
 unsigned long tActivated;
 bool active;
+float brightnessPoti;
+float huePoti;
 
 
 typedef struct 
@@ -31,16 +36,28 @@ int gammaLUT[256];
 rgbw rgbwBuffer[NUMPIXELS] = {0.0f};
 
 void startOTA();
+void readInput();
 void updatePixels(rgbw pxls[NUMPIXELS]);
+void smoothFade(bool active);
+void clrBuffer();
+rgbw sumBrightness();
+rgbw mulColor(float fac, rgbw in);
+rgbw addColor(rgbw in1, rgbw in2);
+rgbw getColor(float r, float g, float b, float w);
+
 
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Booting");
+
   startOTA();
   neoPixels.begin();
 
+  // Init Pins
   pinMode(PINPIR, INPUT);
+  //pinMode(PINPOTI1, INPUT);
+  //pinMode(PINPOTI2, INPUT);
 
   // Create gamma LUT
   float gamma = 2.0f;
@@ -48,6 +65,8 @@ void setup() {
   {
     gammaLUT[n] = (int) (powf(((float)n/255.0f), gamma) * 255);
   }
+
+  
 }
 
 void loop() {
@@ -55,27 +74,70 @@ void loop() {
   int pirState = digitalRead(PINPIR);
   
   unsigned long time = millis();
-  unsigned long activeForMs = 60 * 1000; // 1minute
-
+  unsigned long activeForMs = 4 * 60  * 1000; 
+  
   if (pirState)
   {
     tActivated = millis();
   }
 
-  active = ((millis() - tActivated) < activeForMs);
+  active = ((unsigned long)(time - tActivated) < activeForMs);
 
-
-  for (int n = 0; n < NUMPIXELS; n++)
-  {
-    rgbwBuffer[n].r = 0.0f;
-    rgbwBuffer[n].g = 0.0f;
-    rgbwBuffer[n].b = 0.0f;
-    rgbwBuffer[n].w = (float)active;
-  }
+  smoothFade(active);
 
   updatePixels(rgbwBuffer);
 }
 
+
+void smoothFade(bool active)
+{
+  rgbw targetColor = getColor(0.8f, 0.45f, 0.1f, 1.0f);
+  float targerBrightness =  targetColor.w * NUMPIXELS;
+  float progress = sumBrightness().w / targerBrightness;
+
+  float fadeFactorBase = 0.01;
+  float fadeFactorProgress = 0.1; // Factor for fading faster at start of Fade
+
+  unsigned long time = millis();
+  unsigned long timeOld = 0;
+  if (time - timeOld > 10)
+  {
+    timeOld = time;
+
+    if (active)
+    {
+      float factor = fadeFactorBase + (fadeFactorProgress * (1.0f - progress));
+      for (int i = 1; i < NUMPIXELS-1; i++)
+      {
+        rgbwBuffer[0] = targetColor;
+        rgbwBuffer[i] = addColor(mulColor((1.0f - factor) , rgbwBuffer[i]), mulColor(factor , rgbwBuffer[i - 1]));
+      }
+    }
+    else{
+      float factor = fadeFactorBase + (fadeFactorProgress * (progress));
+      for (int i = 1; i < NUMPIXELS-1; i++)
+      {
+        rgbwBuffer[0] = getColor(0.0f, 0.0f, 0.0f, 0.0f);
+        rgbwBuffer[NUMPIXELS-1] = getColor(0.0f, 0.0f, 0.0f, 0.0f);
+        rgbwBuffer[i] = addColor(mulColor((1.0f - factor) , rgbwBuffer[i]), mulColor(factor , rgbwBuffer[i + 1]));
+      }
+    }
+  }
+}
+
+
+rgbw sumBrightness()
+{
+  rgbw ret = {0.0f};
+  for (int i = 0; i < NUMPIXELS; i++)
+  {
+    ret.r += rgbwBuffer[i].r;
+    ret.g += rgbwBuffer[i].g;
+    ret.b += rgbwBuffer[i].b;
+    ret.w += rgbwBuffer[i].w;
+  }
+  return ret;
+}
 
 void updatePixels(rgbw pxls[NUMPIXELS]) 
 {
@@ -91,11 +153,54 @@ void updatePixels(rgbw pxls[NUMPIXELS])
      int8_t b = gammaLUT[(int)(out.b * 255)];
      int8_t w = gammaLUT[(int)(out.w * 255)];
     // Update LEDs
-    neoPixels.setPixelColor(p, r, g, b, w);
+    neoPixels.setPixelColor(p, b, r, g, w);
   }
   neoPixels.show();
 }
 
+void readInput()
+{
+  brightnessPoti = analogRead(PINPOTI1) / 4095.0f;
+  huePoti = analogRead(PINPOTI2) / 4095.0f;
+}
+
+rgbw mulColor(float fac, rgbw in)
+{
+  rgbw out;
+  out.r = in.r * fac;
+  out.g = in.g * fac;
+  out.b = in.b * fac;
+  out.w = in.w * fac;
+  return out;
+}
+
+rgbw addColor(rgbw in1, rgbw in2)
+{
+  rgbw out;
+  out.r = in1.r + in2.r;
+  out.g = in1.g + in2.g;
+  out.b = in1.b + in2.b;
+  out.w = in1.w + in2.w;
+  return out;
+}
+
+rgbw getColor(float r, float g, float b, float w)
+{
+  rgbw out;
+  out.r = r;
+  out.g = g;
+  out.b = b;
+  out.w = w;
+  return out;
+}
+
+void clrBuffer()
+{
+  for (int p = 0; p < NUMPIXELS; p++)
+  {
+    rgbwBuffer[p] = getColor(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+}
 
 void startOTA()
 {
@@ -135,6 +240,14 @@ void startOTA()
       Serial.println("\nEnd");
     })
     .onProgress([](unsigned int progress, unsigned int total) {
+
+      // Show Progress on Leds
+      clrBuffer();
+      for (int n = 0; n < (progress / (total / NUMPIXELS)); n++)
+      {
+        rgbwBuffer[n] = getColor(0.0f, 0.5f, 0.0f, 0.0f); 
+      }
+      updatePixels(rgbwBuffer);
       Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
     })
     .onError([](ota_error_t error) {
